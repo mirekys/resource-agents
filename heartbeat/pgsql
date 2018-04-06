@@ -60,6 +60,7 @@ OCF_RESKEY_monitor_sql_default="select now();"
 OCF_RESKEY_check_wal_receiver_default="false"
 # Defaults for replication
 OCF_RESKEY_rep_mode_default=none
+OCF_RESKEY_num_sync_quorum_default=1
 OCF_RESKEY_node_list_default=""
 OCF_RESKEY_restore_command_default=""
 OCF_RESKEY_archive_cleanup_command_default=""
@@ -94,6 +95,7 @@ OCF_RESKEY_replication_slot_name_default=""
 
 # for replication
 : ${OCF_RESKEY_rep_mode=${OCF_RESKEY_rep_mode_default}}
+: ${OCF_RESKEY_num_sync_quorum=${OCF_RESKEY_num_sync_quorum_default}}
 : ${OCF_RESKEY_node_list=${OCF_RESKEY_node_list_default}}
 : ${OCF_RESKEY_restore_command=${OCF_RESKEY_restore_command_default}}
 : ${OCF_RESKEY_archive_cleanup_command=${OCF_RESKEY_archive_cleanup_command_default}}
@@ -294,6 +296,20 @@ It requires master_ip restore_command parameters.
 </longdesc>
 <shortdesc lang="en">rep_mode</shortdesc>
 <content type="string" default="${OCF_RESKEY_rep_mode_default}" />
+</parameter>
+
+<parameter name="num_sync_quorum" unique="0" required="0">
+<longdesc lang="en">
+How many nodes specified by a synchronous_standby_names parameter
+when using rep_mode=sync should be in a commit quorum set.
+It is the number of synchronous standbys that transactions need to
+wait for replies from. If there is not enough standby nodes defined,
+the quorum size will be decreased to all nodes available.
+It requires PostgreSQL 9.6 or later.
+It uses the FIRST n order priority mode.
+</longdesc>
+<shortdesc lang="en">number of sync quorum nodes</shortdesc>
+<content type="integer" default="${OCF_RESKEY_num_sync_quorum_default}" />
 </parameter>
 
 <parameter name="node_list" unique="0" required="0">
@@ -1536,17 +1552,36 @@ set_async_mode() {
 }
 
 set_sync_mode() {
-    local sync_node_in_conf
+    local sync_nodes_in_conf
+    local sync_node_list
+    local sync_quorum_size
 
-    sync_node_in_conf=`cat $REP_MODE_CONF | cut -d "'" -f 2`
-    if [ -n "$sync_node_in_conf" ]; then
-        ocf_log debug "$sync_node_in_conf is already sync mode."
+    sync_nodes_in_conf=(`cat $REP_MODE_CONF | sed "s;^synchronous_standby_names[ \t]*=[ \t]*[']\?[0-9]*[ \t]*[(]\?\([^()]*\)[)]\?[']\?;\1;" | sed "s/[\"']//g" | sed 's/,/ /g'`)
+    if [ "${#sync_nodes_in_conf[@]}" -gt 0 ]; then
+	if [ $((${#sync_nodes_in_conf[@]} + 1)) -lt $OCF_RESKEY_num_sync_quorum ] ; then
+		sync_quorum_size=$((${#sync_nodes_in_conf[@]} + 1))
+	else
+		sync_quorum_size=$OCF_RESKEY_num_sync_quorum
+	fi
+
+	for node in ${sync_nodes_in_conf[@]} ; do
+	    if [ "$node" == "$1" ] ; then
+	        ocf_log debug "$1 is already sync mode."
+	        return
+            fi
+	done
+        sync_nodes_in_conf+=("$1")
     else
-        ocf_log info "Setup $1 into sync mode."
-        runasowner -q err "echo \"synchronous_standby_names = '\\\"$1\\\"'\" > \"$REP_MODE_CONF\""
-        [ "$RE_CONTROL_SLAVE" = "false" ] && RE_CONTROL_SLAVE="true"
-        exec_with_retry 0 reload_conf
+        sync_nodes_in_conf=("$1")
+        sync_quorum_size=1
     fi
+
+    sync_node_list=`echo ${sync_nodes_in_conf[@]} | sed 's/[^ ]*/\"&\"/g' | sed 's/ /,/g'`
+    ocf_log info "Setup $1 into sync mode. (quorum size: $sync_quorum_size) new_synchronous_nodes: $sync_node_list"
+    runasowner -q err "echo synchronous_standby_names = \"'\"'$sync_quorum_size ($sync_node_list)'\"'\" > \"$REP_MODE_CONF\""
+
+    [ "$RE_CONTROL_SLAVE" = "false" ] && RE_CONTROL_SLAVE="true"
+    exec_with_retry 0 reload_conf
 }
 
 reload_conf() {
