@@ -17,6 +17,7 @@
 
 : ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
 . ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+. /opt/rh/rh-postgresql96/enable
 
 # Use runuser if available for SELinux.
 if [ -x /sbin/runuser ]; then
@@ -1557,7 +1558,10 @@ set_sync_mode() {
     local sync_quorum_size
 
     sync_nodes_in_conf=(`cat $REP_MODE_CONF | sed "s;^synchronous_standby_names[ \t]*=[ \t]*[']\?[0-9]*[ \t]*[(]\?\([^()]*\)[)]\?[']\?;\1;" | sed "s/[\"']//g" | sed 's/,/ /g'`)
+    ocf_log debug "${sync_nodes_in_conf[@]}"
+    ocf_log debug ${#sync_nodes_in_conf[@]}
     if [ "${#sync_nodes_in_conf[@]}" -gt 0 ]; then
+	ocf_log debug "ra_quorum_size: $OCF_RESKEY_num_sync_quorum standby_num_in_conf: ${#sync_nodes_in_conf[@]}"
 	if [ $((${#sync_nodes_in_conf[@]} + 1)) -lt $OCF_RESKEY_num_sync_quorum ] ; then
 		sync_quorum_size=$((${#sync_nodes_in_conf[@]} + 1))
 	else
